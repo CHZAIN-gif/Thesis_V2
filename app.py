@@ -1,5 +1,4 @@
 # The Final, Complete, and Polished Master Code for Thesis
-# All features and bug fixes are in this one file.
 
 # --- 1. ALL IMPORTS ---
 import streamlit as st
@@ -56,7 +55,6 @@ def save_uploaded_file(file):
     with open(path, "wb") as f: f.write(file.getbuffer())
     return path
 
-# --- MISSING FUNCTIONS ARE NOW ADDED HERE ---
 def save_text_to_cache(doc_id, text_content):
     DIR = "text_cache"; os.makedirs(DIR, exist_ok=True)
     cache_path = os.path.join(DIR, f"{doc_id}.txt")
@@ -178,14 +176,15 @@ def render_upload_page():
             else: st.error("Could not extract any text.")
 
 def render_chat_page():
-    doc = get_db_connection().execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
+    conn = get_db_connection()
+    doc = conn.execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
     st.title(f"Chat with: *{doc['filename']}* 💬")
-    
+
     if f"messages_{st.session_state.doc_id}" not in st.session_state: st.session_state[f"messages_{st.session_state.doc_id}"] = []
-    
+
     for msg in st.session_state[f"messages_{st.session_state.doc_id}"]:
         with st.chat_message(msg['role']): st.markdown(msg['content'])
-    
+
     if prompt := st.chat_input("Ask a question..."):
         st.session_state[f"messages_{st.session_state.doc_id}"].append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
@@ -196,14 +195,15 @@ def render_chat_page():
         st.session_state[f"messages_{st.session_state.doc_id}"].append({"role": "assistant", "content": response})
 
 def render_mind_map_page():
-    doc = get_db_connection().execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
+    conn = get_db_connection()
+    doc = conn.execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
     st.title(f"Visual Mind Map for: *{doc['filename']}* 🗺️")
     text = load_text_from_cache(st.session_state.doc_id)
     if text:
         with st.spinner("AI is creating the mind map..."):
             dot_code = ai_generate_mind_map(text)
             st.graphviz_chart(dot_code)
-    else: st.error("Could not load document text for mind map.")
+    else: st.error("Could not load text for mind map.")
 
 # --- 7. MAIN APP ROUTER ---
 initialize_database()
@@ -215,7 +215,7 @@ if not st.session_state.logged_in:
     render_login_page()
 else:
     PAGES = {"dashboard": render_dashboard, "upload": render_upload_page, "chat": render_chat_page, "mind_map": render_mind_map_page}
-    
+
     st.sidebar.title("Thesis")
     st.sidebar.success(f"Logged in as **{st.session_state.username}**")
     if st.sidebar.button("My Documents 📚", use_container_width=True): st.session_state.page = 'dashboard'; st.rerun()
