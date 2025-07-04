@@ -1,0 +1,11 @@
+streamlit
+bcrypt
+pdfplumber
+google-generativeai
+faiss-cpu
+numpy
+gTTS
+requests
+Pillow
+pytesseract
+graphviz
