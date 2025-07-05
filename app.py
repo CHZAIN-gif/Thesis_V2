@@ -1,4 +1,5 @@
 # The Final, Complete, and Polished Master Code for Thesis
+# All features and bug fixes are in this one file.
 
 # --- 1. ALL IMPORTS ---
 import streamlit as st
@@ -17,28 +18,31 @@ from PIL import Image
 import pytesseract
 import graphviz
 
-# --- 2. CONFIGURATION ---
+# --- 2. CONFIGURATION & SETUP ---
 st.set_page_config(page_title="Thesis", layout="wide", initial_sidebar_state="auto")
 
 # Tell pytesseract where to find the Tesseract program on the RDP server
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
-# Configure the Gemini API key
+# Configure the Gemini API key from Streamlit's secrets
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except (KeyError, AttributeError):
-    pass # We will check for the key when it's used
+    # This will be handled gracefully if the key is missing
+    pass
 
 DATABASE_NAME = 'thesis_database.db'
 
 # --- 3. DATABASE FUNCTIONS ---
 @st.cache_resource
 def get_db_connection():
+    """Establishes a cached connection to the SQLite database."""
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 def initialize_database():
+    """Creates all necessary tables if they don't exist."""
     conn = get_db_connection()
     with conn:
         conn.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT)')
@@ -50,17 +54,20 @@ def hash_password(p): return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).
 def verify_password(p, h): return bcrypt.checkpw(p.encode('utf-8'), h.encode('utf-8'))
 
 def save_uploaded_file(file):
+    """Saves a file to the user_uploads directory with a unique name."""
     DIR = "user_uploads"; os.makedirs(DIR, exist_ok=True)
     path = os.path.join(DIR, f"{uuid.uuid4().hex}-{file.name}")
     with open(path, "wb") as f: f.write(file.getbuffer())
     return path
 
 def save_text_to_cache(doc_id, text_content):
+    """Saves extracted text to a simple file cache for speed."""
     DIR = "text_cache"; os.makedirs(DIR, exist_ok=True)
     cache_path = os.path.join(DIR, f"{doc_id}.txt")
     with open(cache_path, "w", encoding="utf-8") as f: f.write(text_content)
 
 def load_text_from_cache(doc_id):
+    """Loads extracted text from the cache if it exists."""
     path = os.path.join("text_cache", f"{doc_id}.txt")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f: return f.read()
@@ -68,6 +75,7 @@ def load_text_from_cache(doc_id):
 
 # --- 5. AI CORE FUNCTIONS ---
 def ai_extract_text(path):
+    """Robustly extracts text from a PDF, using OCR as a fallback."""
     text = ""
     try:
         with pdfplumber.open(path) as pdf:
@@ -79,18 +87,23 @@ def ai_extract_text(path):
     except Exception as e: return f"Error reading PDF: {e}"
     return text if text.strip() else None
 
-def ai_split_chunks(text): return [text[i:i + 1500] for i in range(0, len(text), 1300)]
+def ai_split_chunks(text): 
+    """Splits text into manageable chunks for the AI."""
+    return [text[i:i + 1500] for i in range(0, len(text), 1300)]
 
 def ai_create_embeddings(chunks):
+    """Creates a FAISS vector index from text chunks."""
     if not chunks: return None
     try:
         result = genai.embed_content(model="models/embedding-001", content=chunks, task_type="retrieval_document")
         index = faiss.IndexFlatL2(len(result['embedding'][0]))
         index.add(np.array(result['embedding']).astype('float32'))
         with io.BytesIO() as bio: faiss.write_index(index, faiss.PyCallbackIOWriter(bio.write)); return bio.getvalue()
-    except Exception: return None
+    except Exception as e: 
+        st.error(f"Google AI Error: {e}"); return None
 
 def ai_get_chat_response(faiss_index, question, chunks):
+    """Gets a chat response from the AI based on document context."""
     try:
         index = faiss.read_index(faiss.PyCallbackIOReader(io.BytesIO(faiss_index).read))
         q_embedding = genai.embed_content(model='models/embedding-001', content=question, task_type="retrieval_query")['embedding']
@@ -102,6 +115,7 @@ def ai_get_chat_response(faiss_index, question, chunks):
     except Exception as e: return f"An error occurred: {e}"
 
 def ai_generate_mind_map(text):
+    """Generates a mind map in Graphviz DOT language."""
     prompt = f"Create a hierarchical mind map of this text in Graphviz DOT language. Use concise labels. Root node should be the main topic. TEXT: {text[:20000]}"
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
@@ -109,8 +123,9 @@ def ai_generate_mind_map(text):
         return response.text.strip().replace("```dot", "").replace("```", "")
     except Exception as e: return f'digraph G {{ error [label="Could not generate mind map"]; }}'
 
-# --- 6. PAGE RENDERING FUNCTIONS ---
+# --- 6. PAGE-RENDERING FUNCTIONS ---
 def render_login_page():
+    """Renders the signup and login forms."""
     st.title("Welcome to Thesis 🧠")
     c1,c2 = st.columns(2)
     conn = get_db_connection()
@@ -141,6 +156,7 @@ def render_login_page():
                 else: st.error("Invalid credentials.")
 
 def render_dashboard():
+    """Renders the main user dashboard with a list of documents."""
     st.title(f"My Documents 📚")
     if st.button("＋ Upload New Document", type="primary"): st.session_state.page = 'upload'; st.rerun()
     st.write("---")
@@ -156,6 +172,7 @@ def render_dashboard():
                     st.session_state.page = 'mind_map'; st.session_state.doc_id = doc['id']; st.rerun()
 
 def render_upload_page():
+    """Renders the file upload page and handles the processing pipeline."""
     st.title("Upload a New Document 📄")
     uploaded_file = st.file_uploader("Choose a PDF file", type=['pdf'])
     if uploaded_file:
@@ -176,54 +193,64 @@ def render_upload_page():
             else: st.error("Could not extract any text.")
 
 def render_chat_page():
+    """Renders the chat interface for a selected document."""
     conn = get_db_connection()
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
     st.title(f"Chat with: *{doc['filename']}* 💬")
-
-    if f"messages_{st.session_state.doc_id}" not in st.session_state: st.session_state[f"messages_{st.session_state.doc_id}"] = []
-
+    
+    # Initialize chat history in session state if it doesn't exist
+    if f"messages_{st.session_state.doc_id}" not in st.session_state:
+        st.session_state[f"messages_{st.session_state.doc_id}"] = []
+    
+    # Display chat history
     for msg in st.session_state[f"messages_{st.session_state.doc_id}"]:
         with st.chat_message(msg['role']): st.markdown(msg['content'])
-
+    
+    # Handle new user input
     if prompt := st.chat_input("Ask a question..."):
         st.session_state[f"messages_{st.session_state.doc_id}"].append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
+        
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = ai_get_chat_response(doc['faiss_index'], prompt, json.loads(doc['chunks_json']))
                 st.markdown(response)
         st.session_state[f"messages_{st.session_state.doc_id}"].append({"role": "assistant", "content": response})
+        st.rerun() # Rerun to show the new messages immediately
 
 def render_mind_map_page():
-    conn = get_db_connection()
-    doc = conn.execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
+    """Renders the Mind Map generation page."""
+    doc = get_db_connection().execute("SELECT * FROM documents WHERE id = ?", (st.session_state.doc_id,)).fetchone()
     st.title(f"Visual Mind Map for: *{doc['filename']}* 🗺️")
     text = load_text_from_cache(st.session_state.doc_id)
     if text:
         with st.spinner("AI is creating the mind map..."):
             dot_code = ai_generate_mind_map(text)
             st.graphviz_chart(dot_code)
-    else: st.error("Could not load text for mind map.")
+    else: st.error("Could not load document text for mind map.")
 
 # --- 7. MAIN APP ROUTER ---
 initialize_database()
 
+# Initialize session state keys
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'page' not in st.session_state: st.session_state.page = 'login'
 
+# Main Router Logic
 if not st.session_state.logged_in:
     render_login_page()
 else:
-    PAGES = {"dashboard": render_dashboard, "upload": render_upload_page, "chat": render_chat_page, "mind_map": render_mind_map_page}
-
+    # Sidebar for logged-in users
     st.sidebar.title("Thesis")
     st.sidebar.success(f"Logged in as **{st.session_state.username}**")
-    if st.sidebar.button("My Documents 📚", use_container_width=True): st.session_state.page = 'dashboard'; st.rerun()
+    if st.sidebar.button("My Documents �", use_container_width=True): st.session_state.page = 'dashboard'; st.rerun()
     if st.sidebar.button("Upload Document 📄", use_container_width=True): st.session_state.page = 'upload'; st.rerun()
     st.sidebar.write("---")
     if st.sidebar.button("Log Out", use_container_width=True):
         for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
 
+    # Page content router
+    PAGES = {"dashboard": render_dashboard, "upload": render_upload_page, "chat": render_chat_page, "mind_map": render_mind_map_page}
     page_function = PAGES.get(st.session_state.page, render_dashboard)
     page_function()
