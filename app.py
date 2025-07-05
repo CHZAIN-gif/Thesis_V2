@@ -1,5 +1,5 @@
 # The Final, Complete, and Polished Master Code for Thesis
-# Version 3.0: Now includes Chat, Mind Map, Insight Panel, and Audio Overview
+# All features and bug fixes are in this one file.
 
 # --- 1. ALL IMPORTS ---
 import streamlit as st
@@ -21,38 +21,54 @@ import time
 
 # --- 2. CONFIGURATION & SETUP ---
 st.set_page_config(page_title="Thesis", layout="wide", initial_sidebar_state="auto")
+
+# Tell pytesseract where to find the Tesseract program on the RDP server
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
+
+# Configure the Gemini API key
 try:
     genai.configure(api_key=st.secrets["AIzaSyC2JwfHL4kK_VYXHcMXACOgvHjRH2PDbXI"])
-except (KeyError, AttributeError): pass
+except (KeyError, AttributeError):
+    # This will be handled gracefully if the key is missing in secrets
+    pass
+
 DATABASE_NAME = 'thesis_database.db'
 
 # --- 3. DATABASE FUNCTIONS ---
 @st.cache_resource
 def get_db_connection():
+    """Establishes a cached connection to the SQLite database."""
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 def initialize_database():
+    """Creates all necessary tables if they don't exist."""
     conn = get_db_connection()
     with conn:
         conn.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT)')
         conn.execute('CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, user_id INTEGER, filename TEXT, path TEXT UNIQUE, faiss_index BLOB, chunks_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
         conn.execute('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, doc_id INTEGER, role TEXT, content TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
 
-# --- 4. AUTH & FILE HELPERS ---
+# --- 4. AUTH & FILE HELPER FUNCTIONS ---
 def hash_password(p): return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 def verify_password(p, h): return bcrypt.checkpw(p.encode('utf-8'), h.encode('utf-8'))
+
 def save_uploaded_file(file):
+    """Saves a file to the user_uploads directory with a unique name."""
     DIR = "user_uploads"; os.makedirs(DIR, exist_ok=True)
     path = os.path.join(DIR, f"{uuid.uuid4().hex}-{file.name}")
     with open(path, "wb") as f: f.write(file.getbuffer())
     return path
+
 def save_text_to_cache(doc_id, text_content):
+    """Saves extracted text to a simple file cache for speed."""
     DIR = "text_cache"; os.makedirs(DIR, exist_ok=True)
-    with open(os.path.join(DIR, f"{doc_id}.txt"), "w", encoding="utf-8") as f: f.write(text_content)
+    cache_path = os.path.join(DIR, f"{doc_id}.txt")
+    with open(cache_path, "w", encoding="utf-8") as f: f.write(text_content)
+
 def load_text_from_cache(doc_id):
+    """Loads extracted text from the cache if it exists."""
     path = os.path.join("text_cache", f"{doc_id}.txt")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f: return f.read()
@@ -60,6 +76,7 @@ def load_text_from_cache(doc_id):
 
 # --- 5. AI CORE FUNCTIONS ---
 def ai_extract_text(path):
+    """Robustly extracts text from a PDF, using OCR as a fallback."""
     text = ""
     try:
         with pdfplumber.open(path) as pdf:
@@ -71,9 +88,12 @@ def ai_extract_text(path):
     except Exception as e: return f"Error reading PDF: {e}"
     return text if text.strip() else None
 
-def ai_split_chunks(text): return [text[i:i + 1500] for i in range(0, len(text), 1300)]
+def ai_split_chunks(text): 
+    """Splits text into manageable chunks for the AI."""
+    return [text[i:i + 1500] for i in range(0, len(text), 1300)]
 
 def ai_create_embeddings(chunks):
+    """Creates embeddings by processing text chunks in batches to avoid API limits."""
     if not chunks: return None
     all_embeddings = []
     try:
@@ -93,6 +113,7 @@ def ai_create_embeddings(chunks):
         return None
 
 def ai_get_chat_response(faiss_index, question, chunks):
+    """Gets a chat response from the AI based on document context."""
     try:
         index = faiss.read_index(faiss.PyCallbackIOReader(io.BytesIO(faiss_index).read))
         q_embedding = genai.embed_content(model='models/embedding-001', content=question, task_type="retrieval_query")['embedding']
@@ -102,6 +123,15 @@ def ai_get_chat_response(faiss_index, question, chunks):
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         return model.generate_content(prompt).text
     except Exception as e: return f"An error occurred: {e}"
+
+def ai_generate_mind_map(text):
+    """Generates a mind map in Graphviz DOT language."""
+    prompt = f"Create a hierarchical mind map of this text in Graphviz DOT language. Use concise labels. Root node should be the main topic. TEXT: {text[:20000]}"
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(prompt)
+        return response.text.strip().replace("```dot", "").replace("```", "")
+    except Exception as e: return f'digraph G {{ error [label="Could not generate mind map"]; }}'
 
 def ai_generate_insights(full_text):
     if not full_text: return {"error": "Cannot generate insights from empty text."}
@@ -126,14 +156,6 @@ def ai_generate_audio_summary(full_text, document_id):
         tts.save(audio_path)
         return audio_path, summary_text
     except Exception as e: return None, None
-
-def ai_generate_mind_map(text):
-    prompt = f"Create a hierarchical mind map of this text in Graphviz DOT language. Use concise labels. Root node should be the main topic. TEXT: {text[:20000]}"
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        response = model.generate_content(prompt)
-        return response.text.strip().replace("```dot", "").replace("```", "")
-    except Exception as e: return f'digraph G {{ error [label="Could not generate mind map"]; }}'
 
 # --- 6. PAGE RENDERING FUNCTIONS ---
 def render_login_page():
@@ -260,14 +282,7 @@ if 'page' not in st.session_state: st.session_state.page = 'login'
 if not st.session_state.logged_in:
     render_login_page()
 else:
-    PAGES = {
-        "dashboard": render_dashboard, 
-        "upload": render_upload_page, 
-        "chat": render_chat_page, 
-        "mind_map": render_mind_map_page,
-        "insights": render_insight_page,
-        "audio": render_audio_page
-    }
+    PAGES = {"dashboard": render_dashboard, "upload": render_upload_page, "chat": render_chat_page, "mind_map": render_mind_map_page, "insights": render_insight_page, "audio": render_audio_page}
     
     st.sidebar.title("Thesis")
     st.sidebar.success(f"Logged in as **{st.session_state.username}**")
