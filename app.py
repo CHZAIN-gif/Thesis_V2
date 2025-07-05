@@ -26,7 +26,7 @@ pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
 # Configure the Gemini API key from Streamlit's secrets
 try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    genai.configure(api_key=st.secrets["AIzaSyC2JwfHL4kK_VYXHcMXACOgvHjRH2PDbXI"])
 except (KeyError, AttributeError):
     # This will be handled gracefully if the key is missing
     pass
